@@ -3,11 +3,14 @@ package com.example.proyectogurber
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.Canvas
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -25,19 +28,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
+import coil.compose.AsyncImage
+import java.io.File
 import java.time.DayOfWeek
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.format.TextStyle
 import java.time.temporal.TemporalAdjusters
 import java.util.Locale
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 
 // --- MODELOS DE DATOS ---
 
@@ -410,12 +419,19 @@ fun LogCard(log: BurgerLog, burgerDefs: List<BurgerDef>, places: List<Place>) {
                         Text(text = "\"${log.note}\"", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, color = Color.DarkGray)
                     }
                     if (log.photoUri != null) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        // Nota: En una app real usarías Coil aquí.
-                        // Text("📸 Foto adjunta (Implementar Coil para ver imagen real)")
-                        Box(modifier = Modifier.fillMaxWidth().height(200.dp).background(Color.LightGray), contentAlignment = Alignment.Center) {
-                            Text("📸 Foto")
-                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // IMAGEN DE LA HAMBURGUESA
+                        AsyncImage(
+                            model = log.photoUri,
+                            contentDescription = "Foto de la hamburguesa",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .border(1.dp, Color.LightGray, RoundedCornerShape(12.dp))
+                        )
                     }
                 }
             }
@@ -564,6 +580,7 @@ fun PieChartSimple(logs: List<BurgerLog>, places: List<Place>) {
 
 // --- DIALOGO DE REGISTRO ---
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddBurgerDialog(
     places: List<Place>,
@@ -588,7 +605,68 @@ fun AddBurgerDialog(
     var rating by remember { mutableStateOf(0) }
 
     // Fecha del registro
-    var dateString by remember { mutableStateOf(LocalDate.now().toString()) }
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    var showDatePicker by remember { mutableStateOf(false) }
+
+    // Foto
+    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
+    val context = LocalContext.current
+
+    // Launcher para Galería
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = { uri -> selectedImageUri = uri }
+    )
+
+    // Launcher para Cámara
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture(),
+        onResult = { success ->
+            if (success) {
+                selectedImageUri = tempPhotoUri
+            }
+        }
+    )
+
+    // Validación de Campos
+    val isFormValid = remember(
+        selectedTab, quantity, selectedPlaceId, selectedBurgerDefId,
+        isNewPlace, newPlaceName, isNewBurger, newBurgerName, rating
+    ) {
+        if (selectedTab == LogType.HOME) {
+            quantity.toIntOrNull() != null && quantity.toInt() > 0
+        } else {
+            // Street validation
+            val placeValid = if (isNewPlace) newPlaceName.isNotBlank() else selectedPlaceId.isNotEmpty()
+            val burgerValid = if (isNewPlace || isNewBurger) newBurgerName.isNotBlank() else selectedBurgerDefId.isNotEmpty()
+            val ratingValid = if (isNewPlace || isNewBurger) rating > 0 else true
+
+            placeValid && burgerValid && ratingValid
+        }
+    }
+
+    if (showDatePicker) {
+        val datePickerState = rememberDatePickerState(
+            initialSelectedDateMillis = selectedDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    datePickerState.selectedDateMillis?.let { millis ->
+                        selectedDate = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
+                    }
+                    showDatePicker = false
+                }) { Text("Aceptar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("Cancelar") }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
@@ -608,12 +686,18 @@ fun AddBurgerDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Fecha manual
+                // Fecha con Picker
                 OutlinedTextField(
-                    value = dateString,
-                    onValueChange = { dateString = it },
-                    label = { Text("Fecha (YYYY-MM-DD)") },
-                    modifier = Modifier.fillMaxWidth()
+                    value = selectedDate.format(DateTimeFormatter.ofPattern("dd 'de' MMMM yyyy")),
+                    onValueChange = { },
+                    label = { Text("Fecha") },
+                    readOnly = true,
+                    trailingIcon = {
+                        IconButton(onClick = { showDatePicker = true }) {
+                            Icon(Icons.Default.DateRange, contentDescription = "Seleccionar fecha")
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().clickable { showDatePicker = true }
                 )
                 Spacer(modifier = Modifier.height(8.dp))
 
@@ -621,13 +705,14 @@ fun AddBurgerDialog(
                     OutlinedTextField(
                         value = quantity,
                         onValueChange = { quantity = it },
-                        label = { Text("Cantidad") },
+                        label = { Text("Cantidad *") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        isError = quantity.toIntOrNull() == null || quantity.toInt() <= 0
                     )
                 } else {
                     // Street Logic
-                    Text("Lugar", style = MaterialTheme.typography.labelLarge)
+                    Text("Lugar *", style = MaterialTheme.typography.labelLarge)
                     if (!isNewPlace) {
                         PlaceSelector(places, selectedPlaceId) { id ->
                             if (id == "NEW") isNewPlace = true else { selectedPlaceId = id; selectedBurgerDefId = "" }
@@ -637,7 +722,8 @@ fun AddBurgerDialog(
                             value = newPlaceName,
                             onValueChange = { newPlaceName = it },
                             label = { Text("Nombre del Restaurante") },
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth(),
+                            isError = newPlaceName.isBlank()
                         )
                         Button(onClick = { isNewPlace = false }, modifier = Modifier.align(Alignment.End)) { Text("Cancelar") }
                     }
@@ -645,7 +731,7 @@ fun AddBurgerDialog(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     if (selectedPlaceId.isNotEmpty() || isNewPlace) {
-                        Text("Hamburguesa", style = MaterialTheme.typography.labelLarge)
+                        Text("Hamburguesa *", style = MaterialTheme.typography.labelLarge)
                         if (!isNewBurger && !isNewPlace) {
                             BurgerSelector(burgerDefs.filter { it.placeId == selectedPlaceId }, selectedBurgerDefId) { id ->
                                 if (id == "NEW") {
@@ -661,22 +747,26 @@ fun AddBurgerDialog(
                                 value = newBurgerName,
                                 onValueChange = { newBurgerName = it },
                                 label = { Text("Nombre de la Hamburguesa") },
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth(),
+                                isError = newBurgerName.isBlank()
                             )
                         }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text("Calificación", style = MaterialTheme.typography.labelLarge)
+                    Text("Calificación ${if(isNewBurger || isNewPlace) "*" else ""}", style = MaterialTheme.typography.labelLarge)
                     Row {
                         (1..5).forEach { star ->
                             Icon(
                                 imageVector = if (star <= rating) Icons.Default.Star else Icons.Default.StarBorder,
                                 contentDescription = null,
-                                tint = Color(0xFFFFD700),
+                                tint = if((isNewBurger || isNewPlace) && rating == 0) Color.Gray else Color(0xFFFFD700),
                                 modifier = Modifier.size(32.dp).clickable { rating = star }
                             )
                         }
+                    }
+                    if((isNewBurger || isNewPlace) && rating == 0) {
+                        Text("Calificación obligatoria para nuevas hamburguesas", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
                 }
 
@@ -688,41 +778,86 @@ fun AddBurgerDialog(
                     modifier = Modifier.fillMaxWidth().height(100.dp)
                 )
 
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // --- BOTONES DE FOTO ---
+                Text("Foto (Opcional)", style = MaterialTheme.typography.labelLarge)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Botón Cámara
+                    FilledTonalButton(
+                        onClick = {
+                            val file = File.createTempFile("img_", ".jpg", context.cacheDir)
+                            val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+                            tempPhotoUri = uri
+                            cameraLauncher.launch(uri)
+                        }
+                    ) {
+                        Icon(Icons.Default.PhotoCamera, contentDescription = null)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Cámara")
+                    }
+
+                    // Botón Galería
+                    OutlinedButton(
+                        onClick = {
+                            galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }
+                    ) {
+                        Icon(Icons.Default.Image, contentDescription = null)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Galería")
+                    }
+                }
+
+                if (selectedImageUri != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    AsyncImage(
+                        model = selectedImageUri,
+                        contentDescription = "Previsualización",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(8.dp)).border(1.dp, Color.Gray, RoundedCornerShape(8.dp))
+                    )
+                    TextButton(onClick = { selectedImageUri = null }) { Text("Eliminar foto") }
+                }
+
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onDismiss) { Text("Cancelar") }
-                    Button(onClick = {
-                        // Lógica de guardado
-                        var finalPlaceId = selectedPlaceId
-                        var finalBurgerId = selectedBurgerDefId
-                        val parsedDate = try { LocalDate.parse(dateString) } catch (e: Exception) { LocalDate.now() }
+                    Button(
+                        onClick = {
+                            // Lógica de guardado
+                            var finalPlaceId = selectedPlaceId
+                            var finalBurgerId = selectedBurgerDefId
 
-                        if (selectedTab == LogType.STREET) {
-                            if (isNewPlace) {
-                                val p = onAddPlace(newPlaceName, 0xFFFFA000) // Color default naranja
-                                finalPlaceId = p.id
+                            if (selectedTab == LogType.STREET) {
+                                if (isNewPlace) {
+                                    val p = onAddPlace(newPlaceName, 0xFFFFA000) // Color default naranja
+                                    finalPlaceId = p.id
+                                }
+                                if (isNewBurger || isNewPlace) {
+                                    val b = onAddBurgerDef(finalPlaceId, newBurgerName, rating)
+                                    finalBurgerId = b.id
+                                } else {
+                                    // Update rating if changed
+                                    onUpdateBurgerRating(finalBurgerId, rating)
+                                }
                             }
-                            if (isNewBurger || isNewPlace) {
-                                val b = onAddBurgerDef(finalPlaceId, newBurgerName, rating)
-                                finalBurgerId = b.id
-                            } else {
-                                // Update rating if changed
-                                onUpdateBurgerRating(finalBurgerId, rating)
-                            }
-                        }
 
-                        val log = BurgerLog(
-                            id = System.currentTimeMillis().toString(),
-                            date = parsedDate,
-                            type = selectedTab,
-                            quantity = quantity.toIntOrNull() ?: 1,
-                            burgerDefId = if (selectedTab == LogType.STREET) finalBurgerId else null,
-                            note = note
-                        )
-                        onSaveLog(log)
+                            val log = BurgerLog(
+                                id = System.currentTimeMillis().toString(),
+                                date = selectedDate,
+                                type = selectedTab,
+                                quantity = quantity.toIntOrNull() ?: 1,
+                                burgerDefId = if (selectedTab == LogType.STREET) finalBurgerId else null,
+                                note = note,
+                                photoUri = selectedImageUri // Guardamos la foto
+                            )
+                            onSaveLog(log)
 
-                    }) { Text("Guardar") }
+                        },
+                        enabled = isFormValid
+                    ) { Text("Guardar") }
                 }
             }
         }

@@ -43,6 +43,9 @@ android {
 
 dependencies {
 
+    // Dependencia para cargar imágenes (Coil)
+    implementation("io.coil-kt:coil-compose:2.7.0")
+
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     implementation("androidx.compose.material:material-icons-extended:1.7.5")
     implementation(libs.androidx.core.ktx)
