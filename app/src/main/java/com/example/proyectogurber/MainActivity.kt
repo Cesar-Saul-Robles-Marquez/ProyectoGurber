@@ -7,10 +7,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Label
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -46,7 +47,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
 import java.util.Locale
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.foundation.Canvas // Asegurando importación de Canvas
 
 // --- MODELOS DE DATOS ---
 
@@ -59,7 +60,8 @@ data class Place(
     val id: String,
     val name: String,
     val colorHex: Long, // Color en formato 0xFFRRGGBB
-    val icon: String = "🍔"
+    val icon: String = "🍔",
+    val iconUri: Uri? = null // Icono personalizado (PNG/JPG)
 )
 
 data class BurgerDef(
@@ -97,7 +99,15 @@ val INITIAL_LOGS = listOf(
     BurgerLog("l1", LocalDate.now().minusDays(15), LogType.STREET, 1, "b1", "Clásica e insuperable"),
     BurgerLog("l2", LocalDate.now().minusDays(10), LogType.HOME, 3, null, "Asado con los amigos"),
     BurgerLog("l3", LocalDate.now().minusDays(2), LogType.STREET, 1, "b2", "Rápida y barata"),
-    BurgerLog("l4", LocalDate.now(), LogType.HOME, 2, null, "Hamburguesas de hoy"), // Prueba para filtro 'Hoy'
+    BurgerLog("l4", LocalDate.now(), LogType.HOME, 2, null, "Hamburguesas de hoy"),
+)
+
+// Colores para etiquetas
+val TAG_COLORS = listOf(
+    0xFFF44336, 0xFFE91E63, 0xFF9C27B0, 0xFF673AB7, 0xFF3F51B5,
+    0xFF2196F3, 0xFF03A9F4, 0xFF00BCD4, 0xFF009688, 0xFF4CAF50,
+    0xFF8BC34A, 0xFFCDDC39, 0xFFFFEB3B, 0xFFFFC107, 0xFFFF9800,
+    0xFFFF5722, 0xFF795548, 0xFF9E9E9E, 0xFF607D8B, 0xFF000000
 )
 
 // --- MAIN ACTIVITY ---
@@ -130,7 +140,7 @@ fun BurgerTrackerApp() {
     var logs by remember { mutableStateOf(INITIAL_LOGS) }
 
     // Navegación simple por estado
-    var currentScreen by remember { mutableStateOf("home") } // "home", "stats"
+    var currentScreen by remember { mutableStateOf("home") } // "home", "stats", "manage"
     var showAddDialog by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -162,23 +172,50 @@ fun BurgerTrackerApp() {
                     selected = currentScreen == "stats",
                     onClick = { currentScreen = "stats" }
                 )
+                NavigationBarItem(
+                    icon = { Icon(Icons.Outlined.Label, contentDescription = "Gestión") },
+                    label = { Text("Gestión") },
+                    selected = currentScreen == "manage",
+                    onClick = { currentScreen = "manage" }
+                )
             }
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showAddDialog = true },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = Color.White
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Agregar")
+            if (currentScreen == "home") {
+                FloatingActionButton(
+                    onClick = { showAddDialog = true },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = Color.White
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Agregar")
+                }
             }
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            if (currentScreen == "home") {
-                HomeScreen(logs, burgerDefs, places)
-            } else {
-                StatsScreen(logs, burgerDefs, places)
+            when (currentScreen) {
+                "home" -> HomeScreen(logs, burgerDefs, places)
+                "stats" -> StatsScreen(logs, burgerDefs, places)
+                "manage" -> ManageTagsScreen(
+                    places = places,
+                    burgerDefs = burgerDefs,
+                    onUpdatePlace = { updatedPlace ->
+                        places = places.map { if (it.id == updatedPlace.id) updatedPlace else it }
+                    },
+                    onAddPlace = { newPlace ->
+                        places = places + newPlace
+                    },
+                    onDeletePlace = { placeId ->
+                        // Opcional: Validar si tiene burgers asociadas antes de borrar
+                        places = places.filter { it.id != placeId }
+                    },
+                    onUpdateBurgerDef = { updatedDef ->
+                        burgerDefs = burgerDefs.map { if (it.id == updatedDef.id) updatedDef else it }
+                    },
+                    onDeleteBurgerDef = { defId ->
+                        burgerDefs = burgerDefs.filter { it.id != defId }
+                    }
+                )
             }
         }
 
@@ -209,7 +246,264 @@ fun BurgerTrackerApp() {
     }
 }
 
-// --- PANTALLAS ---
+// --- PANTALLA DE GESTIÓN (TAGS) ---
+
+@Composable
+fun ManageTagsScreen(
+    places: List<Place>,
+    burgerDefs: List<BurgerDef>,
+    onUpdatePlace: (Place) -> Unit,
+    onAddPlace: (Place) -> Unit,
+    onDeletePlace: (String) -> Unit,
+    onUpdateBurgerDef: (BurgerDef) -> Unit,
+    onDeleteBurgerDef: (String) -> Unit
+) {
+    var selectedTab by remember { mutableStateOf(0) } // 0: Lugares, 1: Nombres
+    var showEditPlaceDialog by remember { mutableStateOf<Place?>(null) }
+    var showEditBurgerDialog by remember { mutableStateOf<BurgerDef?>(null) }
+    var showNewPlaceDialog by remember { mutableStateOf(false) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        TabRow(selectedTabIndex = selectedTab) {
+            Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Lugares") })
+            Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("Hamburguesas") })
+        }
+
+        if (selectedTab == 0) {
+            // LISTA DE LUGARES
+            Box(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(places) { place ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            border = BorderStroke(1.dp, Color.LightGray)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Icono
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .background(Color(place.colorHex), CircleShape)
+                                        .border(1.dp, Color.Gray, CircleShape)
+                                        .clip(CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (place.iconUri != null) {
+                                        AsyncImage(
+                                            model = place.iconUri,
+                                            contentDescription = null,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        Text(place.icon, fontSize = 20.sp)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(16.dp))
+                                Text(place.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                                IconButton(onClick = { showEditPlaceDialog = place }) {
+                                    Icon(Icons.Default.Edit, contentDescription = "Editar", tint = Color.Gray)
+                                }
+                            }
+                        }
+                    }
+                    item { Spacer(modifier = Modifier.height(80.dp)) }
+                }
+                FloatingActionButton(
+                    onClick = { showNewPlaceDialog = true },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                    containerColor = MaterialTheme.colorScheme.primary
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Nuevo Lugar", tint = Color.White)
+                }
+            }
+        } else {
+            // LISTA DE HAMBURGUESAS
+            LazyColumn(
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(burgerDefs) { burger ->
+                    val place = places.find { it.id == burger.placeId }
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        border = BorderStroke(1.dp, Color.LightGray)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(burger.name, style = MaterialTheme.typography.titleMedium)
+                                Text(place?.name ?: "Desconocido", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            }
+                            IconButton(onClick = { showEditBurgerDialog = burger }) {
+                                Icon(Icons.Default.Edit, contentDescription = "Editar", tint = Color.Gray)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- DIALOGOS DE EDICIÓN ---
+
+    if (showEditPlaceDialog != null || showNewPlaceDialog) {
+        val isEditing = showEditPlaceDialog != null
+        val initialPlace = showEditPlaceDialog ?: Place(
+            id = System.currentTimeMillis().toString() + "p",
+            name = "",
+            colorHex = 0xFFFFC107
+        )
+
+        var name by remember { mutableStateOf(initialPlace.name) }
+        var selectedColor by remember { mutableStateOf(initialPlace.colorHex) }
+        var iconUri by remember { mutableStateOf(initialPlace.iconUri) }
+
+        val galleryLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.PickVisualMedia(),
+            onResult = { uri -> if (uri != null) iconUri = uri }
+        )
+
+        Dialog(onDismissRequest = {
+            showEditPlaceDialog = null
+            showNewPlaceDialog = false
+        }) {
+            Surface(shape = RoundedCornerShape(16.dp), color = Color.White) {
+                Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+                    Text(if (isEditing) "Editar Lugar" else "Nuevo Lugar", style = MaterialTheme.typography.headlineSmall)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Nombre del Lugar") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Color de Etiqueta", style = MaterialTheme.typography.labelMedium)
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Selector de Color Simple
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        TAG_COLORS.take(5).forEach { color ->
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(color))
+                                    .border(if (selectedColor == color) 2.dp else 0.dp, Color.Black, CircleShape)
+                                    .clickable { selectedColor = color }
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        TAG_COLORS.drop(5).take(5).forEach { color ->
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(color))
+                                    .border(if (selectedColor == color) 2.dp else 0.dp, Color.Black, CircleShape)
+                                    .clickable { selectedColor = color }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Icono del Lugar (Opcional)", style = MaterialTheme.typography.labelMedium)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.LightGray),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (iconUri != null) {
+                                AsyncImage(
+                                    model = iconUri,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Icon(Icons.Default.Image, contentDescription = null, tint = Color.Gray)
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Button(onClick = {
+                            galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }) {
+                            Text("Subir Logo")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                        TextButton(onClick = { showEditPlaceDialog = null; showNewPlaceDialog = false }) { Text("Cancelar") }
+                        Button(onClick = {
+                            val newPlaceData = initialPlace.copy(
+                                name = name,
+                                colorHex = selectedColor,
+                                iconUri = iconUri
+                            )
+                            if (isEditing) onUpdatePlace(newPlaceData) else onAddPlace(newPlaceData)
+                            showEditPlaceDialog = null
+                            showNewPlaceDialog = false
+                        }, enabled = name.isNotBlank()) {
+                            Text("Guardar")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showEditBurgerDialog != null) {
+        val burger = showEditBurgerDialog!!
+        var name by remember { mutableStateOf(burger.name) }
+
+        AlertDialog(
+            onDismissRequest = { showEditBurgerDialog = null },
+            title = { Text("Editar Hamburguesa") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Nombre") }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    onUpdateBurgerDef(burger.copy(name = name))
+                    showEditBurgerDialog = null
+                }, enabled = name.isNotBlank()) {
+                    Text("Guardar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditBurgerDialog = null }) { Text("Cancelar") }
+            }
+        )
+    }
+}
+
+// --- PANTALLA PRINCIPAL (BITÁCORA) ---
 
 @Composable
 fun HomeScreen(
@@ -224,12 +518,10 @@ fun HomeScreen(
     // Helpers para formatear y navegar
     val locale = Locale("es", "ES")
 
-    // Función para obtener el texto del rango
     val rangeText = remember(timeFilter, selectedDate) {
         when (timeFilter) {
             TimeFilter.DAY -> selectedDate.format(DateTimeFormatter.ofPattern("d 'de' MMMM yyyy", locale))
             TimeFilter.WEEK -> {
-                // Asumiendo semana empieza Lunes
                 val startOfWeek = selectedDate.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
                 val endOfWeek = selectedDate.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY))
                 val formatter = DateTimeFormatter.ofPattern("d MMM", locale)
@@ -240,7 +532,6 @@ fun HomeScreen(
         }
     }
 
-    // Filtrado de logs
     val filteredLogs = remember(logs, timeFilter, selectedDate) {
         logs.filter { log ->
             when (timeFilter) {
@@ -257,34 +548,16 @@ fun HomeScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        // Selector de Tipo de Filtro
         Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            FilterChip(
-                selected = timeFilter == TimeFilter.DAY,
-                onClick = { timeFilter = TimeFilter.DAY; selectedDate = LocalDate.now() },
-                label = { Text("Día") }
-            )
-            FilterChip(
-                selected = timeFilter == TimeFilter.WEEK,
-                onClick = { timeFilter = TimeFilter.WEEK; selectedDate = LocalDate.now() },
-                label = { Text("Semana") }
-            )
-            FilterChip(
-                selected = timeFilter == TimeFilter.MONTH,
-                onClick = { timeFilter = TimeFilter.MONTH; selectedDate = LocalDate.now() },
-                label = { Text("Mes") }
-            )
-            FilterChip(
-                selected = timeFilter == TimeFilter.YEAR,
-                onClick = { timeFilter = TimeFilter.YEAR; selectedDate = LocalDate.now() },
-                label = { Text("Año") }
-            )
+            FilterChip(selected = timeFilter == TimeFilter.DAY, onClick = { timeFilter = TimeFilter.DAY; selectedDate = LocalDate.now() }, label = { Text("Día") })
+            FilterChip(selected = timeFilter == TimeFilter.WEEK, onClick = { timeFilter = TimeFilter.WEEK; selectedDate = LocalDate.now() }, label = { Text("Semana") })
+            FilterChip(selected = timeFilter == TimeFilter.MONTH, onClick = { timeFilter = TimeFilter.MONTH; selectedDate = LocalDate.now() }, label = { Text("Mes") })
+            FilterChip(selected = timeFilter == TimeFilter.YEAR, onClick = { timeFilter = TimeFilter.YEAR; selectedDate = LocalDate.now() }, label = { Text("Año") })
         }
 
-        // Navegador de Fechas (Flechas)
         Card(
             modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -301,16 +574,9 @@ fun HomeScreen(
                         TimeFilter.MONTH -> selectedDate.minusMonths(1)
                         TimeFilter.YEAR -> selectedDate.minusYears(1)
                     }
-                }) {
-                    Icon(Icons.Default.ChevronLeft, contentDescription = "Anterior")
-                }
+                }) { Icon(Icons.Default.ChevronLeft, contentDescription = "Anterior") }
 
-                Text(
-                    text = rangeText,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text(text = rangeText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                 IconButton(onClick = {
                     selectedDate = when(timeFilter) {
@@ -319,13 +585,10 @@ fun HomeScreen(
                         TimeFilter.MONTH -> selectedDate.plusMonths(1)
                         TimeFilter.YEAR -> selectedDate.plusYears(1)
                     }
-                }) {
-                    Icon(Icons.Default.ChevronRight, contentDescription = "Siguiente")
-                }
+                }) { Icon(Icons.Default.ChevronRight, contentDescription = "Siguiente") }
             }
         }
 
-        // Lista
         if (filteredLogs.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -342,9 +605,7 @@ fun HomeScreen(
                 items(filteredLogs) { log ->
                     LogCard(log, burgerDefs, places)
                 }
-                item {
-                    Spacer(modifier = Modifier.height(80.dp)) // Espacio para el FAB
-                }
+                item { Spacer(modifier = Modifier.height(80.dp)) }
             }
         }
     }
@@ -364,23 +625,29 @@ fun LogCard(log: BurgerLog, burgerDefs: List<BurgerDef>, places: List<Place>) {
     Card(
         colors = CardDefaults.cardColors(containerColor = cardColor),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded }
+        modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }
     ) {
         Column {
-            // Banda de color
             Box(modifier = Modifier.fillMaxWidth().height(6.dp).background(accentColor))
 
             Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                // Icono
+                // ICONO DEL LUGAR (AQUI SE MUESTRA LA IMAGEN SUBIDA)
                 Surface(
                     shape = CircleShape,
                     color = if (isHome) Color(0xFFC8E6C9) else Color(0xFFF5F5F5),
                     modifier = Modifier.size(48.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Text(text = if (isHome) "🏡" else place?.icon ?: "🍔", fontSize = 24.sp)
+                        if (!isHome && place?.iconUri != null) {
+                            AsyncImage(
+                                model = place.iconUri,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Text(text = if (isHome) "🏡" else place?.icon ?: "🍔", fontSize = 24.sp)
+                        }
                     }
                 }
 
@@ -412,7 +679,6 @@ fun LogCard(log: BurgerLog, burgerDefs: List<BurgerDef>, places: List<Place>) {
                 }
             }
 
-            // Expandido
             if (expanded) {
                 Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
                     if (log.note.isNotEmpty()) {
@@ -420,8 +686,6 @@ fun LogCard(log: BurgerLog, burgerDefs: List<BurgerDef>, places: List<Place>) {
                     }
                     if (log.photoUri != null) {
                         Spacer(modifier = Modifier.height(12.dp))
-
-                        // IMAGEN DE LA HAMBURGUESA
                         AsyncImage(
                             model = log.photoUri,
                             contentDescription = "Foto de la hamburguesa",
@@ -445,7 +709,6 @@ fun LogCard(log: BurgerLog, burgerDefs: List<BurgerDef>, places: List<Place>) {
 fun StatsScreen(logs: List<BurgerLog>, burgerDefs: List<BurgerDef>, places: List<Place>) {
     val totalBurgers = logs.sumOf { if (it.type == LogType.HOME) it.quantity else 1 }
 
-    // Tier List Logic
     val tiers = mapOf(
         "S" to burgerDefs.filter { it.currentRating == 5 },
         "A" to burgerDefs.filter { it.currentRating == 4 },
@@ -453,12 +716,7 @@ fun StatsScreen(logs: List<BurgerLog>, burgerDefs: List<BurgerDef>, places: List
         "C" to burgerDefs.filter { it.currentRating <= 2 }
     )
 
-    Column(modifier = Modifier
-        .fillMaxSize()
-        .padding(16.dp)
-        .verticalScroll(rememberScrollState())) {
-
-        // Header
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
             modifier = Modifier.fillMaxWidth()
@@ -473,7 +731,6 @@ fun StatsScreen(logs: List<BurgerLog>, burgerDefs: List<BurgerDef>, places: List
         Text("Distribución por Lugar", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Pie Chart Simple
         PieChartSimple(logs, places)
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -483,26 +740,20 @@ fun StatsScreen(logs: List<BurgerLog>, burgerDefs: List<BurgerDef>, places: List
         tiers.forEach { (tier, items) ->
             Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(vertical = 4.dp)) {
                 Box(
-                    modifier = Modifier
-                        .width(50.dp)
-                        .fillMaxHeight()
-                        .background(
-                            when (tier) {
-                                "S" -> Color(0xFFEF5350)
-                                "A" -> Color(0xFFFFCA28)
-                                "B" -> Color(0xFF9CCC65)
-                                else -> Color(0xFFBDBDBD)
-                            }, RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)
-                        ),
+                    modifier = Modifier.width(50.dp).fillMaxHeight().background(
+                        when (tier) {
+                            "S" -> Color(0xFFEF5350)
+                            "A" -> Color(0xFFFFCA28)
+                            "B" -> Color(0xFF9CCC65)
+                            else -> Color(0xFFBDBDBD)
+                        }, RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)
+                    ),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(tier, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 20.sp)
                 }
 
-                Column(modifier = Modifier
-                    .weight(1f)
-                    .background(Color(0xFFF5F5F5), RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp))
-                    .padding(8.dp)) {
+                Column(modifier = Modifier.weight(1f).background(Color(0xFFF5F5F5), RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp)).padding(8.dp)) {
                     if (items.isEmpty()) {
                         Text("-", color = Color.Gray, fontSize = 12.sp)
                     } else {
@@ -520,11 +771,10 @@ fun StatsScreen(logs: List<BurgerLog>, burgerDefs: List<BurgerDef>, places: List
 
 @Composable
 fun PieChartSimple(logs: List<BurgerLog>, places: List<Place>) {
-    // Calculando datos
     val homeCount = logs.filter { it.type == LogType.HOME }.sumOf { it.quantity }
     val streetCounts = logs.filter { it.type == LogType.STREET }
         .groupingBy {
-            val def = INITIAL_BURGER_DEFS.find { d -> d.id == it.burgerDefId } // Simplificación: usar lista global para buscar placeId rápido
+            val def = INITIAL_BURGER_DEFS.find { d -> d.id == it.burgerDefId }
             def?.placeId
         }
         .eachCount()
@@ -534,13 +784,11 @@ fun PieChartSimple(logs: List<BurgerLog>, places: List<Place>) {
 
     val slices = mutableListOf<Triple<Float, Color, String>>()
 
-    // Home Slice
     if (homeCount > 0) {
         val sweep = (homeCount.toFloat() / total) * 360f
         slices.add(Triple(sweep, Color(0xFF2E7D32), "Caseras"))
     }
 
-    // Street Slices
     streetCounts.forEach { (placeId, count) ->
         if (placeId != null) {
             val place = places.find { it.id == placeId }
@@ -550,22 +798,15 @@ fun PieChartSimple(logs: List<BurgerLog>, places: List<Place>) {
     }
 
     Row(modifier = Modifier.fillMaxWidth().height(200.dp), verticalAlignment = Alignment.CenterVertically) {
-        // Grafica
         Box(modifier = Modifier.size(160.dp).weight(1f), contentAlignment = Alignment.Center) {
             Canvas(modifier = Modifier.size(160.dp)) {
                 var startAngle = -90f
                 slices.forEach { (sweep, color, _) ->
-                    drawArc(
-                        color = color,
-                        startAngle = startAngle,
-                        sweepAngle = sweep,
-                        useCenter = true
-                    )
+                    drawArc(color = color, startAngle = startAngle, sweepAngle = sweep, useCenter = true)
                     startAngle += sweep
                 }
             }
         }
-        // Leyenda
         Column(modifier = Modifier.weight(1f).padding(start = 16.dp)) {
             slices.forEach { (_, color, name) ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
@@ -597,29 +838,24 @@ fun AddBurgerDialog(
     var selectedPlaceId by remember { mutableStateOf("") }
     var selectedBurgerDefId by remember { mutableStateOf("") }
 
-    // New Entry States
     var isNewPlace by remember { mutableStateOf(false) }
     var newPlaceName by remember { mutableStateOf("") }
     var isNewBurger by remember { mutableStateOf(false) }
     var newBurgerName by remember { mutableStateOf("") }
     var rating by remember { mutableStateOf(0) }
 
-    // Fecha del registro
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var showDatePicker by remember { mutableStateOf(false) }
 
-    // Foto
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
     val context = LocalContext.current
 
-    // Launcher para Galería
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri -> selectedImageUri = uri }
     )
 
-    // Launcher para Cámara
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture(),
         onResult = { success ->
@@ -629,7 +865,6 @@ fun AddBurgerDialog(
         }
     )
 
-    // Validación de Campos
     val isFormValid = remember(
         selectedTab, quantity, selectedPlaceId, selectedBurgerDefId,
         isNewPlace, newPlaceName, isNewBurger, newBurgerName, rating
@@ -637,7 +872,6 @@ fun AddBurgerDialog(
         if (selectedTab == LogType.HOME) {
             quantity.toIntOrNull() != null && quantity.toInt() > 0
         } else {
-            // Street validation
             val placeValid = if (isNewPlace) newPlaceName.isNotBlank() else selectedPlaceId.isNotEmpty()
             val burgerValid = if (isNewPlace || isNewBurger) newBurgerName.isNotBlank() else selectedBurgerDefId.isNotEmpty()
             val ratingValid = if (isNewPlace || isNewBurger) rating > 0 else true
@@ -678,7 +912,6 @@ fun AddBurgerDialog(
                 Text("Nuevo Registro", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Tabs
                 Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFFEEEEEE))) {
                     TabButton("De la Calle", selectedTab == LogType.STREET) { selectedTab = LogType.STREET }
                     TabButton("Casera", selectedTab == LogType.HOME) { selectedTab = LogType.HOME }
@@ -686,7 +919,6 @@ fun AddBurgerDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Fecha con Picker
                 OutlinedTextField(
                     value = selectedDate.format(DateTimeFormatter.ofPattern("dd 'de' MMMM yyyy")),
                     onValueChange = { },
@@ -711,7 +943,6 @@ fun AddBurgerDialog(
                         isError = quantity.toIntOrNull() == null || quantity.toInt() <= 0
                     )
                 } else {
-                    // Street Logic
                     Text("Lugar *", style = MaterialTheme.typography.labelLarge)
                     if (!isNewPlace) {
                         PlaceSelector(places, selectedPlaceId) { id ->
@@ -780,10 +1011,8 @@ fun AddBurgerDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // --- BOTONES DE FOTO ---
                 Text("Foto (Opcional)", style = MaterialTheme.typography.labelLarge)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Botón Cámara
                     FilledTonalButton(
                         onClick = {
                             val file = File.createTempFile("img_", ".jpg", context.cacheDir)
@@ -797,7 +1026,6 @@ fun AddBurgerDialog(
                         Text("Cámara")
                     }
 
-                    // Botón Galería
                     OutlinedButton(
                         onClick = {
                             galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -826,20 +1054,18 @@ fun AddBurgerDialog(
                     TextButton(onClick = onDismiss) { Text("Cancelar") }
                     Button(
                         onClick = {
-                            // Lógica de guardado
                             var finalPlaceId = selectedPlaceId
                             var finalBurgerId = selectedBurgerDefId
 
                             if (selectedTab == LogType.STREET) {
                                 if (isNewPlace) {
-                                    val p = onAddPlace(newPlaceName, 0xFFFFA000) // Color default naranja
+                                    val p = onAddPlace(newPlaceName, 0xFFFFA000)
                                     finalPlaceId = p.id
                                 }
                                 if (isNewBurger || isNewPlace) {
                                     val b = onAddBurgerDef(finalPlaceId, newBurgerName, rating)
                                     finalBurgerId = b.id
                                 } else {
-                                    // Update rating if changed
                                     onUpdateBurgerRating(finalBurgerId, rating)
                                 }
                             }
@@ -851,7 +1077,7 @@ fun AddBurgerDialog(
                                 quantity = quantity.toIntOrNull() ?: 1,
                                 burgerDefId = if (selectedTab == LogType.STREET) finalBurgerId else null,
                                 note = note,
-                                photoUri = selectedImageUri // Guardamos la foto
+                                photoUri = selectedImageUri
                             )
                             onSaveLog(log)
 
