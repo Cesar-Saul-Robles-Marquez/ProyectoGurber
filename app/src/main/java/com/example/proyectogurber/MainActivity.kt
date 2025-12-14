@@ -3,9 +3,7 @@ package com.example.proyectogurber
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,11 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -38,14 +32,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import kotlin.math.cos
-import kotlin.math.sin
+import java.time.format.TextStyle
+import java.time.temporal.TemporalAdjusters
+import java.util.Locale
 
 // --- MODELOS DE DATOS ---
 
 enum class LogType { HOME, STREET }
+
+// Enum para los filtros de tiempo
+enum class TimeFilter { DAY, WEEK, MONTH, YEAR }
 
 data class Place(
     val id: String,
@@ -88,7 +87,8 @@ val INITIAL_BURGER_DEFS = listOf(
 val INITIAL_LOGS = listOf(
     BurgerLog("l1", LocalDate.now().minusDays(15), LogType.STREET, 1, "b1", "Clásica e insuperable"),
     BurgerLog("l2", LocalDate.now().minusDays(10), LogType.HOME, 3, null, "Asado con los amigos"),
-    BurgerLog("l3", LocalDate.now().minusDays(5), LogType.STREET, 1, "b2", "Rápida y barata"),
+    BurgerLog("l3", LocalDate.now().minusDays(2), LogType.STREET, 1, "b2", "Rápida y barata"),
+    BurgerLog("l4", LocalDate.now(), LogType.HOME, 2, null, "Hamburguesas de hoy"), // Prueba para filtro 'Hoy'
 )
 
 // --- MAIN ACTIVITY ---
@@ -208,28 +208,134 @@ fun HomeScreen(
     burgerDefs: List<BurgerDef>,
     places: List<Place>
 ) {
-    var timeFilter by remember { mutableStateOf("year") } // day, month, year
+    // Estado para el filtro y la fecha seleccionada
+    var timeFilter by remember { mutableStateOf(TimeFilter.YEAR) }
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+
+    // Helpers para formatear y navegar
+    val locale = Locale("es", "ES")
+
+    // Función para obtener el texto del rango
+    val rangeText = remember(timeFilter, selectedDate) {
+        when (timeFilter) {
+            TimeFilter.DAY -> selectedDate.format(DateTimeFormatter.ofPattern("d 'de' MMMM yyyy", locale))
+            TimeFilter.WEEK -> {
+                // Asumiendo semana empieza Lunes
+                val startOfWeek = selectedDate.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+                val endOfWeek = selectedDate.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY))
+                val formatter = DateTimeFormatter.ofPattern("d MMM", locale)
+                "${startOfWeek.format(formatter)} - ${endOfWeek.format(formatter)}"
+            }
+            TimeFilter.MONTH -> selectedDate.format(DateTimeFormatter.ofPattern("MMMM yyyy", locale)).replaceFirstChar { it.uppercase() }
+            TimeFilter.YEAR -> selectedDate.format(DateTimeFormatter.ofPattern("yyyy"))
+        }
+    }
+
+    // Filtrado de logs
+    val filteredLogs = remember(logs, timeFilter, selectedDate) {
+        logs.filter { log ->
+            when (timeFilter) {
+                TimeFilter.DAY -> log.date.isEqual(selectedDate)
+                TimeFilter.WEEK -> {
+                    val startOfWeek = selectedDate.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+                    val endOfWeek = selectedDate.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY))
+                    !log.date.isBefore(startOfWeek) && !log.date.isAfter(endOfWeek)
+                }
+                TimeFilter.MONTH -> log.date.month == selectedDate.month && log.date.year == selectedDate.year
+                TimeFilter.YEAR -> log.date.year == selectedDate.year
+            }
+        }.sortedByDescending { it.date }
+    }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        // Filtros
-        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.Center) {
-            listOf("day" to "Día", "month" to "Mes", "year" to "Año").forEach { (key, label) ->
-                FilterChip(
-                    selected = timeFilter == key,
-                    onClick = { timeFilter = key },
-                    label = { Text(label) },
-                    modifier = Modifier.padding(horizontal = 4.dp)
+        // Selector de Tipo de Filtro
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            FilterChip(
+                selected = timeFilter == TimeFilter.DAY,
+                onClick = { timeFilter = TimeFilter.DAY; selectedDate = LocalDate.now() },
+                label = { Text("Día") }
+            )
+            FilterChip(
+                selected = timeFilter == TimeFilter.WEEK,
+                onClick = { timeFilter = TimeFilter.WEEK; selectedDate = LocalDate.now() },
+                label = { Text("Semana") }
+            )
+            FilterChip(
+                selected = timeFilter == TimeFilter.MONTH,
+                onClick = { timeFilter = TimeFilter.MONTH; selectedDate = LocalDate.now() },
+                label = { Text("Mes") }
+            )
+            FilterChip(
+                selected = timeFilter == TimeFilter.YEAR,
+                onClick = { timeFilter = TimeFilter.YEAR; selectedDate = LocalDate.now() },
+                label = { Text("Año") }
+            )
+        }
+
+        // Navegador de Fechas (Flechas)
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                IconButton(onClick = {
+                    selectedDate = when(timeFilter) {
+                        TimeFilter.DAY -> selectedDate.minusDays(1)
+                        TimeFilter.WEEK -> selectedDate.minusWeeks(1)
+                        TimeFilter.MONTH -> selectedDate.minusMonths(1)
+                        TimeFilter.YEAR -> selectedDate.minusYears(1)
+                    }
+                }) {
+                    Icon(Icons.Default.ChevronLeft, contentDescription = "Anterior")
+                }
+
+                Text(
+                    text = rangeText,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                IconButton(onClick = {
+                    selectedDate = when(timeFilter) {
+                        TimeFilter.DAY -> selectedDate.plusDays(1)
+                        TimeFilter.WEEK -> selectedDate.plusWeeks(1)
+                        TimeFilter.MONTH -> selectedDate.plusMonths(1)
+                        TimeFilter.YEAR -> selectedDate.plusYears(1)
+                    }
+                }) {
+                    Icon(Icons.Default.ChevronRight, contentDescription = "Siguiente")
+                }
             }
         }
 
         // Lista
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(logs) { log ->
-                LogCard(log, burgerDefs, places)
+        if (filteredLogs.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("🍽️", fontSize = 48.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Sin hamburguesas en este periodo", color = Color.Gray)
+                }
             }
-            item {
-                Spacer(modifier = Modifier.height(80.dp)) // Espacio para el FAB
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                items(filteredLogs) { log ->
+                    LogCard(log, burgerDefs, places)
+                }
+                item {
+                    Spacer(modifier = Modifier.height(80.dp)) // Espacio para el FAB
+                }
             }
         }
     }
@@ -481,6 +587,9 @@ fun AddBurgerDialog(
     var newBurgerName by remember { mutableStateOf("") }
     var rating by remember { mutableStateOf(0) }
 
+    // Fecha del registro
+    var dateString by remember { mutableStateOf(LocalDate.now().toString()) }
+
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
             modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -498,6 +607,15 @@ fun AddBurgerDialog(
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
+
+                // Fecha manual
+                OutlinedTextField(
+                    value = dateString,
+                    onValueChange = { dateString = it },
+                    label = { Text("Fecha (YYYY-MM-DD)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
 
                 if (selectedTab == LogType.HOME) {
                     OutlinedTextField(
@@ -578,6 +696,7 @@ fun AddBurgerDialog(
                         // Lógica de guardado
                         var finalPlaceId = selectedPlaceId
                         var finalBurgerId = selectedBurgerDefId
+                        val parsedDate = try { LocalDate.parse(dateString) } catch (e: Exception) { LocalDate.now() }
 
                         if (selectedTab == LogType.STREET) {
                             if (isNewPlace) {
@@ -595,7 +714,7 @@ fun AddBurgerDialog(
 
                         val log = BurgerLog(
                             id = System.currentTimeMillis().toString(),
-                            date = LocalDate.now(),
+                            date = parsedDate,
                             type = selectedTab,
                             quantity = quantity.toIntOrNull() ?: 1,
                             burgerDefId = if (selectedTab == LogType.STREET) finalBurgerId else null,
