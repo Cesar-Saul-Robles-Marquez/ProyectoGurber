@@ -1,16 +1,25 @@
 package com.example.proyectogurber
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,18 +37,32 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
+import coil.compose.rememberAsyncImagePainter
+import kotlinx.coroutines.launch
 import java.io.File
+import java.io.FileOutputStream
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -47,7 +70,9 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
 import java.util.Locale
-import androidx.compose.foundation.Canvas // Asegurando importación de Canvas
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 // --- MODELOS DE DATOS ---
 
@@ -206,7 +231,6 @@ fun BurgerTrackerApp() {
                         places = places + newPlace
                     },
                     onDeletePlace = { placeId ->
-                        // Opcional: Validar si tiene burgers asociadas antes de borrar
                         places = places.filter { it.id != placeId }
                     },
                     onUpdateBurgerDef = { updatedDef ->
@@ -242,6 +266,186 @@ fun BurgerTrackerApp() {
                     showAddDialog = false
                 }
             )
+        }
+    }
+}
+
+// --- LOGICA DE RECORTE (BITMAP CROP) ---
+
+fun cropAndSaveImage(
+    context: Context,
+    bitmap: Bitmap,
+    scale: Float,
+    offset: Offset,
+    viewWidth: Int,
+    viewHeight: Int
+): Uri? {
+    return try {
+        // El círculo de recorte es el 40% del tamaño menor de la vista (según UI)
+        val circleRadius = min(viewWidth, viewHeight) / 2.5f
+        val circleCenterX = viewWidth / 2f
+        val circleCenterY = viewHeight / 2f
+
+        // Calcular las dimensiones de la imagen escalada
+        val scaledWidth = bitmap.width * scale
+        val scaledHeight = bitmap.height * scale
+
+        // Posición de la imagen en pantalla (centrada + offset)
+        val imageX = (viewWidth - scaledWidth) / 2f + offset.x
+        val imageY = (viewHeight - scaledHeight) / 2f + offset.y
+
+        // Coordenadas del círculo relativas a la imagen
+        val cropX = (circleCenterX - circleRadius - imageX) / scale
+        val cropY = (circleCenterY - circleRadius - imageY) / scale
+        val cropSize = (circleRadius * 2) / scale
+
+        // Asegurar límites seguros
+        val finalX = max(0f, cropX).toInt()
+        val finalY = max(0f, cropY).toInt()
+
+        // Evitar que el ancho/alto exceda el bitmap original si el usuario hace zoom out excesivo
+        val finalWidth = min((cropSize).toInt(), bitmap.width - finalX)
+        val finalHeight = min((cropSize).toInt(), bitmap.height - finalY)
+
+        if (finalWidth <= 0 || finalHeight <= 0) return null
+
+        // Crear el bitmap recortado
+        val croppedBitmap = Bitmap.createBitmap(bitmap, finalX, finalY, finalWidth, finalHeight)
+
+        // Guardar en archivo
+        val file = File(context.cacheDir, "cropped_icon_${System.currentTimeMillis()}.jpg")
+        val stream = FileOutputStream(file)
+        croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+        stream.close()
+
+        FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
+    }
+}
+
+// --- PANTALLA DE RECORTE DE IMAGEN (SIMPLE CROP) ---
+
+@Composable
+fun ImageCropperDialog(
+    imageUri: Uri,
+    onCropDone: (Uri) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var scale by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    var viewSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+
+    // Cargar Bitmap
+    val bitmap = remember(imageUri) {
+        if (Build.VERSION.SDK_INT < 28) {
+            MediaStore.Images.Media.getBitmap(context.contentResolver, imageUri)
+        } else {
+            val source = ImageDecoder.createSource(context.contentResolver, imageUri)
+            ImageDecoder.decodeBitmap(source)
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                // Área de Recorte
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onGloballyPositioned { coordinates ->
+                            viewSize = coordinates.size
+                        }
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = max(0.5f, min(5f, scale * zoom))
+                                offset += pan
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "Recortar",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer(
+                                scaleX = scale,
+                                scaleY = scale,
+                                translationX = offset.x,
+                                translationY = offset.y
+                            ),
+                        contentScale = ContentScale.Fit
+                    )
+
+                    // Máscara Circular (Overlay)
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val circleRadius = size.minDimension / 2.5f // Tamaño del círculo de recorte
+                        val circleCenter = center
+
+                        // Oscurecer todo excepto el círculo
+                        clipPath(
+                            path = Path().apply {
+                                addOval(Rect(center = circleCenter, radius = circleRadius))
+                            },
+                            clipOp = ClipOp.Difference
+                        ) {
+                            drawRect(Color.Black.copy(alpha = 0.6f))
+                        }
+
+                        // Borde blanco del círculo
+                        drawCircle(
+                            color = Color.White,
+                            radius = circleRadius,
+                            center = circleCenter,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+                        )
+                    }
+                }
+
+                // Botones
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(24.dp)
+                        .fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = Color.Gray)) {
+                        Text("Cancelar")
+                    }
+                    Button(onClick = {
+                        // Guardado REAL del recorte
+                        if (viewSize.width > 0 && viewSize.height > 0) {
+                            val croppedUri = cropAndSaveImage(
+                                context,
+                                bitmap,
+                                scale,
+                                offset,
+                                viewSize.width,
+                                viewSize.height
+                            )
+                            if (croppedUri != null) {
+                                onCropDone(croppedUri)
+                            } else {
+                                onCropDone(imageUri) // Fallback
+                            }
+                        } else {
+                            onCropDone(imageUri)
+                        }
+                    }) {
+                        Text("Usar Foto")
+                    }
+                }
+
+                Text(
+                    "Pellizca para zoom y arrastra para ajustar",
+                    color = Color.White,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 48.dp)
+                )
+            }
         }
     }
 }
@@ -369,10 +573,30 @@ fun ManageTagsScreen(
         var selectedColor by remember { mutableStateOf(initialPlace.colorHex) }
         var iconUri by remember { mutableStateOf(initialPlace.iconUri) }
 
+        // Estado para el cropper
+        var tempImageUri by remember { mutableStateOf<Uri?>(null) }
+        var showCropper by remember { mutableStateOf(false) }
+
         val galleryLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.PickVisualMedia(),
-            onResult = { uri -> if (uri != null) iconUri = uri }
+            onResult = { uri ->
+                if (uri != null) {
+                    tempImageUri = uri
+                    showCropper = true
+                }
+            }
         )
+
+        if (showCropper && tempImageUri != null) {
+            ImageCropperDialog(
+                imageUri = tempImageUri!!,
+                onCropDone = { croppedUri ->
+                    iconUri = croppedUri
+                    showCropper = false
+                },
+                onDismiss = { showCropper = false }
+            )
+        }
 
         Dialog(onDismissRequest = {
             showEditPlaceDialog = null

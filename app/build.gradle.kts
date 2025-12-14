@@ -43,8 +43,15 @@ android {
 
 dependencies {
 
-    // Dependencia para cargar imágenes (Coil)
+    // --- CORRECCIÓN AQUÍ ---
+    // Esta dependencia es necesaria para que funcione Canvas y drawArc
+    implementation("androidx.compose.foundation:foundation")
+
+    // Coil para imágenes
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    // Image Cropper (Para recortar fotos de perfil/lugares)
+    implementation("com.vanniktech:android-image-cropper:4.6.0")
 
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     implementation("androidx.compose.material:material-icons-extended:1.7.5")
